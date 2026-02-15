@@ -10,33 +10,80 @@
 using KeyType = std::string;
 
 template <typename ValueType>
-struct SSTable {
-    using TableType = std::vector<std::pair<KeyType, std::optional<ValueType>>>;
+class SSTable {
+public:
+    constexpr static size_t kBlockSize = 4;
 
-    SSTable(TableType&& table) : table(std::move(table)) {}
+    using KeyValueType = std::pair<KeyType, std::optional<ValueType>>;
 
-    static std::unique_ptr<SSTable> Make(const std::map<KeyType, std::optional<ValueType>>& mp) {
-        TableType table(mp.begin(), mp.end());
-        return std::make_unique<SSTable>(std::move(table));
+    using BlockType = std::vector<KeyValueType>;
+
+    using TableType = std::vector<BlockType>;
+
+    void Add(BlockType&& block) {
+        table_.push_back(std::move(block));
     }
 
-    std::pair<bool, std::optional<ValueType>> Find(const KeyType& key) {
-        const auto it = std::lower_bound(table.begin(), table.end(), std::make_pair(key, std::nullopt));
-        if (it != table.end() && it->first == key) {
-            return std::make_pair(true, it->second);
+    BlockType GetBlock(size_t idx) const {
+        return table_[idx];
+    }
+
+    size_t GetNumBlocks() const {
+        return table_.size();
+    }
+
+    static std::unique_ptr<SSTable> Make(const std::map<KeyType, std::optional<ValueType>>& mp) {
+        auto res = std::make_unique<SSTable>();
+        BlockType block;
+        for (auto it = mp.begin(); it != mp.end(); ++it) {
+            block.emplace_back(it->first, it->second);
+            if (block.size() == kBlockSize) {
+                res->Add(std::move(block));
+                block.clear();
+            }
         }
-        return std::make_pair(false, std::nullopt);
+        if (!block.empty()) {
+            res->Add(std::move(block));
+        }
+        return res;
+    }
+
+    std::pair<bool, std::optional<ValueType>> Find(const KeyType& key) const {
+        int l = -1, r = GetSize();
+        while (l + 1 < r) {
+            int mid = (l + r) / 2;
+            if (GetKeyValue(mid).first <= key) {
+                l = mid;
+            } else {
+                r = mid;
+            }
+        }
+        if (l >= 0 && GetKeyValue(l).first == key) {
+            return {true, GetKeyValue(l).second};
+        }
+        return {false, std::nullopt};
     }
 
     BloomFilter MakeBloomFilter() const {
-        BloomFilter bloom_filter(table.size());
-        for (const auto& [key, value] : table) {
-            bloom_filter.Add(key);
+        BloomFilter bloom_filter(GetSize());
+        for (const auto& block : table_) {
+            for (const auto& [key, value] : block) {
+                bloom_filter.Add(key);
+            }
         }
         return bloom_filter;
     }
 
-    const TableType table;
+private:
+    TableType table_;
+
+    size_t GetSize() const {
+        return (GetNumBlocks() - 1) * kBlockSize + table_.back().size();
+    }
+
+    const KeyValueType& GetKeyValue(int idx) const {
+        return table_[idx / kBlockSize][idx % kBlockSize];
+    }
 };
 
 template<typename ValueType>
@@ -49,20 +96,43 @@ std::unique_ptr<SSTable<ValueType>> Merge(std::vector<std::unique_ptr<SSTable<Va
         return a.second < b.second;
     };
     std::priority_queue<PQElement, std::vector<PQElement>, decltype(cmp)> pq(cmp);
-    typename SSTable<ValueType>::TableType table;
+
+    auto sstable = std::make_unique<SSTable<ValueType>>();
+
+    typename SSTable<ValueType>::BlockType block;
+    std::vector<size_t> block_indices(sstables.size(), 0);
     std::vector<size_t> indices(sstables.size(), 0);
+    std::vector<typename SSTable<ValueType>::BlockType> blocks(sstables.size());
     for (size_t i = 0; i < sstables.size(); ++i) {
-        pq.emplace(sstables[i]->table[0].first, i);
+        blocks[i] = sstables[i]->GetBlock(0);
+        pq.emplace(blocks[i][0].first, i);
     }
+    std::string previous_key;
     while (!pq.empty()) {
         auto [key, idx] = pq.top();
         pq.pop();
-        if (table.empty() || table.back().first != key) {
-            table.emplace_back(key, sstables[idx]->table[indices[idx]].second);
+        if (previous_key != key) {
+            block.emplace_back(key, blocks[idx][indices[idx]].second);
+            previous_key = key;
         }
-        if (++indices[idx] < sstables[idx]->table.size()) {
-            pq.emplace(sstables[idx]->table[indices[idx]].first, idx);
+        if (block.size() == SSTable<ValueType>::kBlockSize) {
+            sstable->Add(std::move(block));
+            block.clear();
+        }
+        if (++indices[idx] == blocks[idx].size()) {
+            if (++block_indices[idx] < sstables[idx]->GetNumBlocks()) {
+                blocks[idx] = sstables[idx]->GetBlock(block_indices[idx]);
+                indices[idx] = 0;
+            } else {
+                blocks[idx].clear();
+            }
+        }
+        if (indices[idx] < blocks[idx].size()) {
+            pq.emplace(blocks[idx][indices[idx]].first, idx);
         }
     }
-    return std::make_unique<SSTable<ValueType>>(std::move(table));
+    if (!block.empty()) {
+        sstable->Add(std::move(block));
+    }
+    return sstable;
 }
