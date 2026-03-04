@@ -23,7 +23,12 @@ namespace {
 
 
 InvertedIndex::InvertedIndex(size_t memtable_size, size_t growth_factor)
-    : lsm_(memtable_size, growth_factor) {
+    : lsm_(memtable_size, growth_factor, [](const std::optional<roaring::Roaring>& first, const std::optional<roaring::Roaring>& second){
+        if (!first || !second) {
+            throw std::runtime_error("Unexpected input values");
+        }
+        return *first | *second;
+    }) {
 
     // не знаю готовой библы поэтому попросил ИИ закинуть какие-то дефолтные английские стоп-слова
     const std::vector<std::string> stops = {
@@ -74,11 +79,7 @@ uint32_t InvertedIndex::add_document(const std::string& text) {
     uint32_t doc_id = next_doc_id_++;
     auto words = preprocess(text);
     for (const auto& word : words) {
-        auto opt_bitmap = lsm_.Get(word);
         roaring::Roaring bitmap;
-        if (opt_bitmap.has_value()) {
-            bitmap = opt_bitmap.value();
-        }
         bitmap.add(doc_id);
         lsm_.Put(word, bitmap);
     }

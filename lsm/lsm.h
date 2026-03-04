@@ -6,7 +6,9 @@
 template<typename ValueType>
 class LSM {
 public:
-    LSM(size_t memtable_size, size_t growth_factor) : memtable_size_(memtable_size), growth_factor_(growth_factor), bloom_filters_(1), disk_(1){}
+    LSM(size_t memtable_size, size_t growth_factor, const std::function<std::optional<ValueType>(const std::optional<ValueType>&, const std::optional<ValueType>&)>& merge_rule = [](const std::optional<ValueType>& first, const std::optional<ValueType>& second){
+        return second;
+    }) : memtable_size_(memtable_size), growth_factor_(growth_factor), bloom_filters_(1), disk_(1), merge_rule_(merge_rule){}
 
     void Put(const KeyType& key, const ValueType& value) {
         MyPut(key, std::make_optional(value));
@@ -17,9 +19,12 @@ public:
     }
 
     std::optional<ValueType> Get(const KeyType& key) const {
+        std::optional<ValueType> res;
+        bool empty = true;
         auto it = memtable_.find(key);
         if (it != memtable_.end()) {
-            return it->second;
+            res = it->second;
+            empty = false;
         }
         for (size_t i = 0; i < disk_.size(); ++i) {
             const auto& level = disk_[i];
@@ -27,12 +32,16 @@ public:
                 size_t j = level.size() - 1 - wrong_ind;
                 if (!bloom_filters_[i][j].Contains(key)) continue;
                 auto [found, value] = level[j]->Find(key);
-                if (found) {
-                    return value;
+                if (!found) continue;
+                if (empty) {
+                    res = value;
+                    empty = false;
+                } else {
+                    res = merge_rule_(value, res);
                 }
             }
         }
-        return std::nullopt;
+        return res;
     }
 
 private:
@@ -41,8 +50,14 @@ private:
     std::map<KeyType, std::optional<ValueType>> memtable_;
     std::vector<std::vector<BloomFilter>> bloom_filters_;
     std::vector<std::vector<std::unique_ptr<SSTable<ValueType>>>> disk_;
+    std::function<std::optional<ValueType>(const std::optional<ValueType>&, const std::optional<ValueType>&)> merge_rule_;
 
     void MyPut(const KeyType& key, const std::optional<ValueType>& value) {
+        auto it = memtable_.find(key);
+        if (it != memtable_.end()) {
+            it->second = merge_rule_(it->second, value);
+            return;
+        }
         memtable_[key] = value;
         if (memtable_.size() >= memtable_size_) {
             disk_[0].push_back(SSTable<ValueType>::Make(memtable_));
@@ -54,7 +69,7 @@ private:
                 disk_.emplace_back();
                 bloom_filters_.emplace_back();
             }
-            disk_[i + 1].push_back(Merge(std::move(disk_[i])));
+            disk_[i + 1].push_back(Merge(std::move(disk_[i]), merge_rule_));
             bloom_filters_[i + 1].push_back(disk_[i + 1].back()->MakeBloomFilter());
             disk_[i].clear();
             bloom_filters_[i].clear();

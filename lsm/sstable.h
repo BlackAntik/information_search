@@ -87,7 +87,7 @@ private:
 };
 
 template<typename ValueType>
-std::unique_ptr<SSTable<ValueType>> Merge(std::vector<std::unique_ptr<SSTable<ValueType>>>&& sstables) {
+std::unique_ptr<SSTable<ValueType>> Merge(std::vector<std::unique_ptr<SSTable<ValueType>>>&& sstables, const std::function<std::optional<ValueType>(const std::optional<ValueType>&, const std::optional<ValueType>&)>& MergeValues) {
     using PQElement = std::pair<KeyType, size_t>;
     auto cmp = [](const PQElement& a, const PQElement& b) { // pq finds max
         if (a.first != b.first) {
@@ -107,19 +107,9 @@ std::unique_ptr<SSTable<ValueType>> Merge(std::vector<std::unique_ptr<SSTable<Va
         blocks[i] = sstables[i]->GetBlock(0);
         pq.emplace(blocks[i][0].first, i);
     }
-    std::string previous_key;
-    while (!pq.empty()) {
-        auto [key, idx] = pq.top();
-        pq.pop();
-        if (previous_key != key) {
-            block.emplace_back(key, blocks[idx][indices[idx]].second);
-            previous_key = key;
-        }
-        if (block.size() == SSTable<ValueType>::kBlockSize) {
-            sstable->Add(std::move(block));
-            block.clear();
-        }
-        if (++indices[idx] == blocks[idx].size()) {
+
+    auto move_index = [&](size_t idx){
+         if (++indices[idx] == blocks[idx].size()) {
             if (++block_indices[idx] < sstables[idx]->GetNumBlocks()) {
                 blocks[idx] = sstables[idx]->GetBlock(block_indices[idx]);
                 indices[idx] = 0;
@@ -129,6 +119,25 @@ std::unique_ptr<SSTable<ValueType>> Merge(std::vector<std::unique_ptr<SSTable<Va
         }
         if (indices[idx] < blocks[idx].size()) {
             pq.emplace(blocks[idx][indices[idx]].first, idx);
+        }
+    };
+
+    while (!pq.empty()) {
+        auto [key, idx] = pq.top();
+        pq.pop();
+        std::optional<ValueType> cur_value = blocks[idx][indices[idx]].second;
+        move_index(idx);
+        
+        while (!pq.empty() && pq.top().first == key) {
+            size_t other_idx = pq.top().second;
+            pq.pop();
+            cur_value = MergeValues(blocks[other_idx][indices[other_idx]].second, cur_value);
+            move_index(other_idx);
+        }
+        block.emplace_back(key, cur_value);
+        if (block.size() == SSTable<ValueType>::kBlockSize) {
+            sstable->Add(std::move(block));
+            block.clear();
         }
     }
     if (!block.empty()) {
