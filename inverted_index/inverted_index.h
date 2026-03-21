@@ -14,6 +14,12 @@ public:
 
     uint32_t add_document(const std::string& text);
 
+    /// Добавить произвольный термин для указанного документа напрямую (без preprocess/стемминга).
+    void add_term(const std::string& term, uint32_t doc_id);
+
+    /// Получить bitmap для термина напрямую из LSM (без preprocess/стемминга).
+    roaring::Roaring get_term_bitmap(const std::string& term);
+
     std::vector<uint32_t> query(const std::string& formula);
 
     std::unordered_set<std::string> preprocess(const std::string& text);

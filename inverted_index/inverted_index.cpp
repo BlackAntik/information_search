@@ -86,6 +86,20 @@ uint32_t InvertedIndex::add_document(const std::string& text) {
     return doc_id;
 }
 
+void InvertedIndex::add_term(const std::string& term, uint32_t doc_id) {
+    roaring::Roaring bitmap;
+    bitmap.add(doc_id);
+    lsm_.Put(term, bitmap);
+}
+
+roaring::Roaring InvertedIndex::get_term_bitmap(const std::string& term) {
+    auto opt = lsm_.Get(term);
+    if (opt.has_value()) {
+        return opt.value();
+    }
+    return roaring::Roaring();
+}
+
 std::vector<InvertedIndex::Token> InvertedIndex::tokenize(const std::string& query) {
     std::vector<Token> tokens;
     std::string lower = to_lower(query);

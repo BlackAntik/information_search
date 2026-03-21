@@ -1,0 +1,16 @@
+*.out
+*.exe
+*.app
+
+*.o
+*.a
+*.so
+*.dylib
+
+date_index/tests
+inverted_index/tests
+lsm/tests
+lsm/benchmark
+wildcard/tests
+
+.DS_Store
